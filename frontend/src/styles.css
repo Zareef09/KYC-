@@ -452,6 +452,36 @@ p {
   gap: 12px;
 }
 
+.voice-panel {
+  background: #f8fbfd;
+  border: 1px solid #dce6ed;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.voice-panel p {
+  color: #526a7a;
+  line-height: 1.45;
+  margin-bottom: 0;
+}
+
+.voice-head,
+.section-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.voice-head h3,
+.section-head h3 {
+  font-size: 1.05rem;
+  line-height: 1.15;
+  margin-bottom: 0;
+}
+
 .admin-shell {
   min-height: 100vh;
   padding: 24px;
@@ -576,6 +606,64 @@ p {
   gap: 10px;
 }
 
+.admin-section h4 {
+  font-size: 0.95rem;
+  margin: 0 0 10px;
+}
+
+.voice-review {
+  border-top: 1px solid #dce6ed;
+  padding-top: 18px;
+}
+
+.note-box {
+  background: #f8fbfd;
+  border: 1px solid #dce6ed;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+.note-box p,
+.note-box ul {
+  color: #526a7a;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.note-box ul {
+  padding-left: 18px;
+}
+
+.message-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.message-row {
+  background: #f8fbfd;
+  border: 1px solid #dce6ed;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.message-row strong {
+  color: #496274;
+  display: block;
+  font-size: 0.78rem;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.message-row p {
+  line-height: 1.45;
+  margin: 0;
+}
+
 details {
   border: 1px solid #dce6ed;
   border-radius: 8px;
@@ -668,7 +756,9 @@ pre {
 
   .review-detail,
   .field-row,
-  .record-head {
+  .record-head,
+  .voice-head,
+  .section-head {
     flex-direction: column;
   }
 

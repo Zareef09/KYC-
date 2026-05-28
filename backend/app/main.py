@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import secrets
 import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps, UnidentifiedImageError
@@ -17,8 +19,27 @@ import pytesseract
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "uploads"
+
+
+def load_local_env() -> None:
+    env_path = BASE_DIR / ".env"
+    if not env_path.exists():
+        return
+
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+load_local_env()
+
 ALLOWED_CLIENT_TYPES = {"individual", "entity"}
 FILE_KEYS = {"license_front", "license_back", "articles"}
+VAPI_WEBHOOK_SECRET = os.getenv("VAPI_WEBHOOK_SECRET", "")
+VAPI_ASSISTANT_ID = os.getenv("VAPI_ASSISTANT_ID", "")
 
 DATE_PATTERN = re.compile(r"\b(?:19|20)\d{2}[-/]\d{2}[-/]\d{2}\b")
 POSTAL_PATTERN = re.compile(r"\b(?:[A-Z]\d[A-Z][ -]?\d[A-Z]\d|\d{6})\b", re.I)
@@ -48,6 +69,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -85,8 +108,8 @@ async def save_upload(upload: UploadFile, folder: Path, fallback: str) -> Path:
 def prepare_image(image: Image.Image) -> Image.Image:
     image = ImageOps.exif_transpose(image).convert("RGB")
     if image.width < 1800:
-      scale = 1800 / image.width
-      image = image.resize((1800, int(image.height * scale)))
+        scale = 1800 / image.width
+        image = image.resize((1800, int(image.height * scale)))
 
     grayscale = ImageOps.grayscale(image)
     grayscale = ImageOps.autocontrast(grayscale)
@@ -413,6 +436,10 @@ def record_path(intake_id: str) -> Path:
     return UPLOAD_DIR / intake_id / "record.json"
 
 
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def write_record(record: dict[str, object]) -> None:
     path = record_path(str(record["intake_id"]))
     path.write_text(json.dumps(record, indent=2), encoding="utf-8")
@@ -427,6 +454,7 @@ def read_record(intake_id: str) -> dict[str, object]:
 
 def intake_summary(record: dict[str, object]) -> dict[str, object]:
     front_fields = record["ocr"]["front"]["fields"]
+    voice_intake = record.get("voice_intake") or {}
     return {
         "intake_id": record["intake_id"],
         "created_at": record["created_at"],
@@ -434,8 +462,251 @@ def intake_summary(record: dict[str, object]) -> dict[str, object]:
         "name": front_fields.get("full_name"),
         "license_number": front_fields.get("license_number"),
         "date_of_birth": front_fields.get("date_of_birth"),
+        "voice_status": voice_intake.get("status", "not_started"),
         "status": "ready_for_review",
     }
+
+
+def empty_voice_intake() -> dict[str, object]:
+    return {
+        "status": "not_started",
+        "call_id": None,
+        "started_at": None,
+        "ended_at": None,
+        "ended_reason": None,
+        "messages": [],
+        "transcript_events": [],
+        "summary": None,
+        "structured_answers": {},
+        "success_evaluation": None,
+        "missing_information": [],
+        "urgent_deadline_flags": [],
+        "attorney_review_notes": [],
+        "last_event_at": None,
+        "client_events": [],
+    }
+
+
+def ensure_voice_intake(record: dict[str, object]) -> dict[str, object]:
+    voice_intake = record.get("voice_intake")
+    if not isinstance(voice_intake, dict):
+        voice_intake = empty_voice_intake()
+        record["voice_intake"] = voice_intake
+
+    defaults = empty_voice_intake()
+    for key, value in defaults.items():
+        voice_intake.setdefault(key, value)
+    return voice_intake
+
+
+def compact_message(message: dict[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "role",
+        "message",
+        "content",
+        "transcript",
+        "transcriptType",
+        "time",
+        "secondsFromStart",
+        "createdAt",
+        "endedAt",
+    }
+    return {key: value for key, value in message.items() if key in allowed}
+
+
+def first_string(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def find_nested_value(value: Any, keys: set[str]) -> Any:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in keys and item not in (None, ""):
+                return item
+        for item in value.values():
+            found = find_nested_value(item, keys)
+            if found not in (None, ""):
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = find_nested_value(item, keys)
+            if found not in (None, ""):
+                return found
+    return None
+
+
+def find_intake_id(payload: dict[str, Any]) -> str | None:
+    value = find_nested_value(payload, {"intake_id", "intakeId", "intakeID"})
+    return str(value) if value else None
+
+
+def extract_call_id(message: dict[str, Any]) -> str | None:
+    call = message.get("call")
+    if isinstance(call, dict):
+        call_id = first_string(call.get("id"), call.get("callId"))
+        if call_id:
+            return call_id
+    return first_string(message.get("callId"), message.get("id"))
+
+
+def extract_analysis(message: dict[str, Any]) -> dict[str, Any]:
+    analysis = message.get("analysis")
+    if isinstance(analysis, dict):
+        return analysis
+
+    call = message.get("call")
+    if isinstance(call, dict) and isinstance(call.get("analysis"), dict):
+        return call["analysis"]
+    return {}
+
+
+def extract_artifact(message: dict[str, Any]) -> dict[str, Any]:
+    artifact = message.get("artifact")
+    if isinstance(artifact, dict):
+        return artifact
+
+    call = message.get("call")
+    if isinstance(call, dict) and isinstance(call.get("artifact"), dict):
+        return call["artifact"]
+    return {}
+
+
+def normalize_message_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+
+    messages = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role")
+        text = first_string(item.get("message"), item.get("content"), item.get("transcript"))
+        if role and text:
+            messages.append({**compact_message(item), "role": role, "message": text})
+    return messages
+
+
+def structured_answers_from(analysis: dict[str, Any]) -> dict[str, Any]:
+    structured = analysis.get("structuredData")
+    if isinstance(structured, dict):
+        return structured
+    return {}
+
+
+def list_from_structured(structured: dict[str, Any], key: str) -> list[Any]:
+    value = structured.get(key)
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def apply_vapi_message(record: dict[str, object], message: dict[str, Any]) -> None:
+    voice_intake = ensure_voice_intake(record)
+    message_type = str(message.get("type") or "unknown")
+    call_id = extract_call_id(message)
+    if call_id:
+        voice_intake["call_id"] = call_id
+
+    voice_intake["last_event_at"] = utc_now()
+
+    if message_type == "status-update":
+        status = first_string(message.get("status"))
+        if status:
+            voice_intake["status"] = status
+        if status in {"in-progress", "started"} and not voice_intake.get("started_at"):
+            voice_intake["started_at"] = utc_now()
+        if status == "ended" and not voice_intake.get("ended_at"):
+            voice_intake["ended_at"] = utc_now()
+
+    elif message_type in {"transcript", 'transcript[transcriptType="final"]'}:
+        transcript = first_string(message.get("transcript"), message.get("originalTranscript"))
+        if transcript:
+            event = compact_message(message)
+            event["transcript"] = transcript
+            voice_intake["transcript_events"].append(event)
+            if message.get("transcriptType") == "final":
+                voice_intake["messages"].append(
+                    {
+                        "role": message.get("role", "user"),
+                        "message": transcript,
+                    }
+                )
+
+    elif message_type == "conversation-update":
+        messages = normalize_message_list(message.get("messages"))
+        if messages:
+            voice_intake["messages"] = messages
+
+    elif message_type == "end-of-call-report":
+        voice_intake["status"] = "ended"
+        voice_intake["ended_at"] = first_string(message.get("endedAt")) or utc_now()
+        voice_intake["ended_reason"] = first_string(
+            message.get("endedReason"), message.get("ended_reason")
+        )
+
+        artifact = extract_artifact(message)
+        artifact_messages = normalize_message_list(artifact.get("messages"))
+        if artifact_messages:
+            voice_intake["messages"] = artifact_messages
+
+        transcript = artifact.get("transcript")
+        if isinstance(transcript, str) and transcript.strip():
+            voice_intake["transcript"] = transcript.strip()
+        elif isinstance(message.get("transcript"), str) and message["transcript"].strip():
+            voice_intake["transcript"] = message["transcript"].strip()
+
+        analysis = extract_analysis(message)
+        voice_intake["summary"] = first_string(analysis.get("summary"), message.get("summary"))
+        structured = structured_answers_from(analysis)
+        voice_intake["structured_answers"] = structured
+        voice_intake["success_evaluation"] = analysis.get("successEvaluation")
+        voice_intake["missing_information"] = list_from_structured(
+            structured, "missing_information"
+        )
+        voice_intake["urgent_deadline_flags"] = list_from_structured(
+            structured, "urgent_deadline_flags"
+        )
+        voice_intake["attorney_review_notes"] = list_from_structured(
+            structured, "attorney_review_notes"
+        )
+
+
+def apply_client_voice_event(
+    record: dict[str, object], event_type: str, payload: dict[str, Any]
+) -> None:
+    voice_intake = ensure_voice_intake(record)
+    call_id = first_string(payload.get("call_id"), payload.get("callId"))
+    if call_id:
+        voice_intake["call_id"] = call_id
+
+    if event_type == "call-start":
+        voice_intake["status"] = "in-progress"
+        voice_intake["started_at"] = voice_intake.get("started_at") or utc_now()
+    elif event_type == "call-end":
+        voice_intake["status"] = "ended"
+        voice_intake["ended_at"] = voice_intake.get("ended_at") or utc_now()
+    elif event_type == "error":
+        voice_intake["status"] = "error"
+    elif event_type == "vapi-message":
+        message = payload.get("message")
+        if isinstance(message, dict):
+            apply_vapi_message(record, message)
+            return
+
+    event = {
+        "type": event_type,
+        "received_at": utc_now(),
+        "call_id": call_id,
+    }
+    if isinstance(payload.get("message"), str):
+        event["message"] = payload["message"]
+    voice_intake["client_events"].append(event)
+    voice_intake["last_event_at"] = utc_now()
 
 
 @app.get("/api/health")
@@ -444,6 +715,10 @@ def health() -> dict[str, object]:
         "status": "ok",
         "tesseract_available": tesseract_available(),
         "upload_dir": str(UPLOAD_DIR),
+        "vapi": {
+            "assistant_configured": bool(VAPI_ASSISTANT_ID),
+            "webhook_secret_configured": bool(VAPI_WEBHOOK_SECRET),
+        },
     }
 
 
@@ -463,7 +738,9 @@ def list_intakes() -> dict[str, object]:
 
 @app.get("/api/intakes/{intake_id}")
 def get_intake(intake_id: str) -> dict[str, object]:
-    return read_record(intake_id)
+    record = read_record(intake_id)
+    ensure_voice_intake(record)
+    return record
 
 
 @app.get("/api/intakes/{intake_id}/files/{file_key}")
@@ -481,6 +758,63 @@ def get_intake_file(intake_id: str, file_key: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="File not found.")
 
     return FileResponse(path)
+
+
+@app.post("/api/intakes/{intake_id}/voice-events")
+async def update_voice_event(intake_id: str, request: Request) -> dict[str, object]:
+    record = read_record(intake_id)
+    payload = await request.json()
+    event_type = first_string(payload.get("type"), payload.get("event")) or "unknown"
+    apply_client_voice_event(record, event_type, payload)
+    write_record(record)
+    return {"status": "ok", "voice_intake": record["voice_intake"]}
+
+
+def webhook_authorized(
+    request: Request,
+    x_vapi_secret: str | None,
+    authorization: str | None,
+) -> bool:
+    if not VAPI_WEBHOOK_SECRET:
+        return True
+
+    query_secret = request.query_params.get("secret")
+    bearer_token = ""
+    if authorization and authorization.lower().startswith("bearer "):
+        bearer_token = authorization[7:].strip()
+
+    return any(
+        secrets.compare_digest(candidate, VAPI_WEBHOOK_SECRET)
+        for candidate in [x_vapi_secret or "", query_secret or "", bearer_token]
+    )
+
+
+@app.post("/api/webhooks/vapi")
+async def receive_vapi_webhook(
+    request: Request,
+    x_vapi_secret: Annotated[str | None, Header()] = None,
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    if not webhook_authorized(request, x_vapi_secret, authorization):
+        raise HTTPException(status_code=401, detail="Invalid Vapi webhook secret.")
+
+    payload = await request.json()
+    message = payload.get("message", payload)
+    if not isinstance(message, dict):
+        return {"status": "ignored", "reason": "missing message"}
+
+    intake_id = find_intake_id(payload)
+    if not intake_id:
+        return {"status": "ignored", "reason": "missing intake_id"}
+
+    record = read_record(intake_id)
+    apply_vapi_message(record, message)
+    write_record(record)
+    return {
+        "status": "ok",
+        "intake_id": intake_id,
+        "message_type": message.get("type"),
+    }
 
 
 @app.post("/api/intakes")
@@ -528,7 +862,7 @@ async def create_intake(
 
     record = {
         "intake_id": intake_id,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": utc_now(),
         "client_type": normalized_client_type,
         "files": {
             "license_front": front_path.name,
@@ -539,6 +873,7 @@ async def create_intake(
             "front": front_ocr,
             "back": back_ocr,
         },
+        "voice_intake": empty_voice_intake(),
     }
     write_record(record)
     return record

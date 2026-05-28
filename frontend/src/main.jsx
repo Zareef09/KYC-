@@ -1,8 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import Vapi from "@vapi-ai/web";
 import "./styles.css";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+const VAPI_PUBLIC_KEY = import.meta.env.VITE_VAPI_PUBLIC_API_KEY || "";
+const VAPI_ASSISTANT_ID = import.meta.env.VITE_VAPI_ASSISTANT_ID || "";
 
 const steps = ["Front", "Back", "Type", "Docs", "Submit"];
 
@@ -23,6 +26,23 @@ const frontFieldLabels = {
   sex: "Sex",
   license_class: "Class",
   conditions: "Conditions",
+};
+
+const voiceAnswerLabels = {
+  employer_name: "Employer",
+  role_title: "Role",
+  work_location: "Work location",
+  employment_start_date: "Start date",
+  employment_end_date: "End date",
+  termination_date: "Termination date",
+  stated_termination_reason: "Stated reason",
+  suspected_wrongful_basis: "Suspected basis",
+  notice_or_severance: "Notice or severance",
+  final_pay_status: "Final pay",
+  documents_available: "Documents",
+  damages_described: "Damages",
+  desired_outcome: "Desired outcome",
+  contact_preference: "Contact preference",
 };
 
 function App() {
@@ -516,6 +536,7 @@ function ReviewStep({
           <a className="text-link" href="/admin">
             Open admin dashboard
           </a>
+          <VoiceIntakeStep intake={result} />
         </section>
       )}
       <div className="button-row sticky-actions">
@@ -540,6 +561,165 @@ function ReviewStep({
         )}
       </div>
     </div>
+  );
+}
+
+function VoiceIntakeStep({ intake }) {
+  const vapiRef = useRef(null);
+  const callIdRef = useRef("");
+  const [callStatus, setCallStatus] = useState("ready");
+  const [callId, setCallId] = useState("");
+  const [error, setError] = useState("");
+
+  const frontFields = intake?.ocr?.front?.fields || {};
+  const variableValues = useMemo(
+    () => ({
+      intake_id: intake?.intake_id || "",
+      intakeId: intake?.intake_id || "",
+      clientName: frontFields.full_name || "the prospective client",
+      clientType: intake?.client_type || "individual",
+      jurisdiction: frontFields.province || "unknown",
+      inquiryType: "wrongful termination",
+    }),
+    [frontFields.full_name, frontFields.province, intake?.client_type, intake?.intake_id]
+  );
+
+  async function sendVoiceEvent(type, payload = {}) {
+    if (!intake?.intake_id) return;
+    try {
+      await fetch(`${API_BASE_URL}/api/intakes/${intake.intake_id}/voice-events`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type, ...payload }),
+      });
+    } catch {
+      // The call itself should continue even if local status sync is unavailable.
+    }
+  }
+
+  function rememberCallId(message) {
+    const nextCallId = message?.call?.id || message?.callId || message?.id;
+    if (nextCallId && nextCallId !== callIdRef.current) {
+      callIdRef.current = nextCallId;
+      setCallId(nextCallId);
+      sendVoiceEvent("call-id", { call_id: nextCallId });
+    }
+  }
+
+  async function startVoiceIntake() {
+    if (!VAPI_PUBLIC_KEY || !VAPI_ASSISTANT_ID) {
+      setError("Vapi is not configured. Add the public key and assistant ID to the frontend env.");
+      return;
+    }
+
+    setError("");
+    setCallStatus("starting");
+
+    const vapi = new Vapi(VAPI_PUBLIC_KEY);
+    vapiRef.current = vapi;
+
+    vapi.on("call-start", () => {
+      setCallStatus("in-progress");
+      sendVoiceEvent("call-start", { call_id: callIdRef.current });
+    });
+
+    vapi.on("call-end", () => {
+      setCallStatus("ended");
+      sendVoiceEvent("call-end", { call_id: callIdRef.current });
+    });
+
+    vapi.on("message", (message) => {
+      rememberCallId(message);
+      if (message?.type === "status-update" && message.status) {
+        setCallStatus(message.status);
+      }
+      sendVoiceEvent("vapi-message", { call_id: callIdRef.current, message });
+    });
+
+    vapi.on("error", (vapiError) => {
+      const message = vapiError?.message || "The voice intake could not continue.";
+      setError(message);
+      setCallStatus("error");
+      sendVoiceEvent("error", { message, call_id: callIdRef.current });
+    });
+
+    try {
+      const call = await vapi.start(VAPI_ASSISTANT_ID, {
+        recordingEnabled: false,
+        variableValues,
+        metadata: {
+          intake_id: intake.intake_id,
+          source: "kyc-intake-web",
+        },
+      });
+      rememberCallId(call);
+    } catch (startError) {
+      const message = startError?.message || "The voice intake could not be started.";
+      setError(message);
+      setCallStatus("error");
+      sendVoiceEvent("error", { message, call_id: callIdRef.current });
+    }
+  }
+
+  function stopVoiceIntake() {
+    vapiRef.current?.stop();
+    setCallStatus("ending");
+  }
+
+  useEffect(() => {
+    return () => {
+      vapiRef.current?.stop();
+    };
+  }, []);
+
+  const isActive = ["starting", "in-progress", "queued", "ringing"].includes(callStatus);
+  const statusLabel = {
+    ready: "Ready",
+    starting: "Starting",
+    "in-progress": "In progress",
+    queued: "Queued",
+    ringing: "Ringing",
+    ending: "Ending",
+    ended: "Ended",
+    error: "Needs attention",
+  }[callStatus] || callStatus;
+
+  return (
+    <section className="voice-panel" aria-label="Wrongful termination voice intake">
+      <div className="voice-head">
+        <div>
+          <p className="eyebrow">Legal intake</p>
+          <h3>Wrongful termination voice intake</h3>
+        </div>
+        <span className="status-pill">{statusLabel}</span>
+      </div>
+      <p>
+        Start a web voice call with the legal secretary agent. The final transcript and
+        answers are saved to this local intake record through the Vapi webhook.
+      </p>
+      {callId && (
+        <div className="review-detail">
+          <strong>Vapi call</strong>
+          <span>{callId}</span>
+        </div>
+      )}
+      {error && (
+        <div className="form-error" role="alert">
+          {error}
+        </div>
+      )}
+      <div className="button-row">
+        {isActive ? (
+          <button className="secondary-button" type="button" onClick={stopVoiceIntake}>
+            End call
+          </button>
+        ) : (
+          <button className="primary-button" type="button" onClick={startVoiceIntake}>
+            Start voice intake
+          </button>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -656,6 +836,7 @@ function AdminDashboard() {
             >
               <strong>{intake.name || "Name needs review"}</strong>
               <span>{intake.license_number || "License needs review"}</span>
+              <small>Voice: {intake.voice_status || "not_started"}</small>
               <small>{new Date(intake.created_at).toLocaleString()}</small>
             </button>
           ))}
@@ -721,6 +902,8 @@ function AdminRecord({ record }) {
         </section>
       )}
 
+      <VoiceIntakeReview voiceIntake={record.voice_intake} />
+
       <section className="admin-section">
         <h3>Raw OCR text</h3>
         <details>
@@ -732,6 +915,81 @@ function AdminRecord({ record }) {
           <pre>{record.ocr.back.raw_text || "No text detected."}</pre>
         </details>
       </section>
+    </div>
+  );
+}
+
+function VoiceIntakeReview({ voiceIntake }) {
+  const voice = voiceIntake || {};
+  const structured = voice.structured_answers || {};
+  const messages = Array.isArray(voice.messages) ? voice.messages : [];
+  const transcript = voice.transcript;
+
+  return (
+    <section className="admin-section voice-review">
+      <div className="section-head">
+        <h3>Voice legal intake</h3>
+        <span className="status-pill">{voice.status || "not_started"}</span>
+      </div>
+
+      <div className="field-grid">
+        <div className="field-row">
+          <span>Call ID</span>
+          <strong>{voice.call_id || "No call recorded"}</strong>
+        </div>
+        <div className="field-row">
+          <span>Ended reason</span>
+          <strong>{voice.ended_reason || "Not available"}</strong>
+        </div>
+      </div>
+
+      {voice.summary && (
+        <div className="note-box">
+          <strong>Summary</strong>
+          <p>{voice.summary}</p>
+        </div>
+      )}
+
+      <section>
+        <h4>Structured answers</h4>
+        <FieldGrid fields={structured} labels={voiceAnswerLabels} />
+      </section>
+
+      <FlagList title="Missing information" values={voice.missing_information} />
+      <FlagList title="Urgent deadline flags" values={voice.urgent_deadline_flags} />
+      <FlagList title="Attorney review notes" values={voice.attorney_review_notes} />
+
+      <details>
+        <summary>Conversation transcript</summary>
+        {messages.length > 0 ? (
+          <div className="message-list">
+            {messages.map((message, index) => (
+              <div className="message-row" key={`${message.role}-${index}`}>
+                <strong>{message.role || "speaker"}</strong>
+                <p>{message.message || message.content || message.transcript}</p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <pre>{transcript || "No transcript has been received yet."}</pre>
+        )}
+      </details>
+    </section>
+  );
+}
+
+function FlagList({ title, values }) {
+  const items = Array.isArray(values) ? values.filter(Boolean) : [];
+  if (items.length === 0) return null;
+
+  return (
+    <div className="note-box">
+      <strong>{title}</strong>
+      <ul>
+        {items.map((item, index) => (
+          <li key={`${title}-${index}`}>{String(item)}</li>
+        ))}
+      </ul>
     </div>
   );
 }
