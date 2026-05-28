@@ -4,15 +4,33 @@ import "./styles.css";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
-const steps = [
-  "Front license",
-  "Back license",
-  "Client type",
-  "Articles",
-  "Review",
-];
+const steps = ["Front", "Back", "Type", "Docs", "Submit"];
+
+const frontFieldLabels = {
+  full_name: "Name",
+  first_name: "First name",
+  last_name: "Last name",
+  address_line: "Street address",
+  city: "City",
+  province: "Province",
+  postal_code: "Postal code",
+  license_number: "License number",
+  issue_date: "Issue date",
+  expiry_date: "Expiry date",
+  date_of_birth: "Date of birth",
+  reference_number: "Reference number",
+  height: "Height",
+  sex: "Sex",
+  license_class: "Class",
+  conditions: "Conditions",
+};
 
 function App() {
+  const isAdmin = window.location.pathname.startsWith("/admin");
+  return isAdmin ? <AdminDashboard /> : <IntakeApp />;
+}
+
+function IntakeApp() {
   const [step, setStep] = useState(0);
   const [frontPhoto, setFrontPhoto] = useState(null);
   const [backPhoto, setBackPhoto] = useState(null);
@@ -88,7 +106,6 @@ function App() {
         method: "POST",
         body: formData,
       });
-
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
@@ -105,97 +122,88 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
-      <section className="topbar" aria-label="KYC intake progress">
-        <div>
-          <p className="eyebrow">Client onboarding</p>
-          <h1>Simple KYC intake</h1>
+    <main className="mobile-stage">
+      <section className="phone-shell" aria-label="iPhone 15 Pro Max optimized app">
+        <div className="phone-bezel">
+          <div className="dynamic-island" />
+          <div className="app-screen">
+            <header className="mobile-header">
+              <div>
+                <p className="eyebrow">KYC intake</p>
+                <h1>Verify identity</h1>
+              </div>
+              <a className="admin-link" href="/admin">
+                Admin
+              </a>
+            </header>
+
+            <Progress currentStep={effectiveStep} />
+
+            <section className="mobile-card">
+              {effectiveStep === 0 && (
+                <CaptureStep
+                  title="Front of license"
+                  description="Fill the frame with the front of the license."
+                  photo={frontPhoto}
+                  onCapture={(blob) => storePhoto("front", blob)}
+                  onRetake={() => clearPhoto("front")}
+                  nextDisabled={!frontPhoto}
+                  onNext={() => setStep(1)}
+                />
+              )}
+
+              {effectiveStep === 1 && (
+                <CaptureStep
+                  title="Back of license"
+                  description="Capture the back clearly, especially the center-right number."
+                  photo={backPhoto}
+                  onCapture={(blob) => storePhoto("back", blob)}
+                  onRetake={() => clearPhoto("back")}
+                  nextDisabled={!backPhoto}
+                  onBack={() => setStep(0)}
+                  onNext={() => setStep(2)}
+                />
+              )}
+
+              {effectiveStep === 2 && (
+                <ClientTypeStep
+                  clientType={clientType}
+                  onChange={(value) => {
+                    setClientType(value);
+                    if (value === "individual") setArticlesFile(null);
+                  }}
+                  onBack={() => setStep(1)}
+                  onNext={() => setStep(clientType === "entity" ? 3 : 4)}
+                />
+              )}
+
+              {effectiveStep === 3 && (
+                <ArticlesStep
+                  file={articlesFile}
+                  onFile={setArticlesFile}
+                  onBack={() => setStep(2)}
+                  onNext={() => setStep(4)}
+                />
+              )}
+
+              {effectiveStep === 4 && (
+                <ReviewStep
+                  frontPhoto={frontPhoto}
+                  backPhoto={backPhoto}
+                  clientType={clientType}
+                  articlesFile={articlesFile}
+                  canSubmit={canSubmit}
+                  isSubmitting={isSubmitting}
+                  submitError={submitError}
+                  result={result}
+                  onBack={() => setStep(needsArticles ? 3 : 2)}
+                  onSubmit={submitIntake}
+                  onReset={reset}
+                />
+              )}
+            </section>
+          </div>
         </div>
-        <Progress currentStep={effectiveStep} />
-      </section>
-
-      <section className="workspace">
-        <aside className="summary-panel" aria-label="Captured intake summary">
-          <h2>Packet</h2>
-          <SummaryItem label="Front license" complete={Boolean(frontPhoto)} />
-          <SummaryItem label="Back license" complete={Boolean(backPhoto)} />
-          <SummaryItem
-            label="Client type"
-            complete={Boolean(clientType)}
-            detail={clientType === "entity" ? "Entity" : "Individual"}
-          />
-          {needsArticles && (
-            <SummaryItem
-              label="Articles"
-              complete={Boolean(articlesFile)}
-              detail={articlesFile?.name}
-            />
-          )}
-        </aside>
-
-        <section className="flow-panel">
-          {effectiveStep === 0 && (
-            <CaptureStep
-              title="Capture the front of the license"
-              description="Place the front of the driver's license inside the camera frame."
-              photo={frontPhoto}
-              onCapture={(blob) => storePhoto("front", blob)}
-              onRetake={() => clearPhoto("front")}
-              nextDisabled={!frontPhoto}
-              onNext={() => setStep(1)}
-            />
-          )}
-
-          {effectiveStep === 1 && (
-            <CaptureStep
-              title="Capture the back of the license"
-              description="Flip the license over and capture the barcode side."
-              photo={backPhoto}
-              onCapture={(blob) => storePhoto("back", blob)}
-              onRetake={() => clearPhoto("back")}
-              nextDisabled={!backPhoto}
-              onBack={() => setStep(0)}
-              onNext={() => setStep(2)}
-            />
-          )}
-
-          {effectiveStep === 2 && (
-            <ClientTypeStep
-              clientType={clientType}
-              onChange={(value) => {
-                setClientType(value);
-                if (value === "individual") setArticlesFile(null);
-              }}
-              onBack={() => setStep(1)}
-              onNext={() => setStep(clientType === "entity" ? 3 : 4)}
-            />
-          )}
-
-          {effectiveStep === 3 && (
-            <ArticlesStep
-              file={articlesFile}
-              onFile={setArticlesFile}
-              onBack={() => setStep(2)}
-              onNext={() => setStep(4)}
-            />
-          )}
-
-          {effectiveStep === 4 && (
-            <ReviewStep
-              frontPhoto={frontPhoto}
-              backPhoto={backPhoto}
-              clientType={clientType}
-              articlesFile={articlesFile}
-              canSubmit={canSubmit}
-              isSubmitting={isSubmitting}
-              submitError={submitError}
-              result={result}
-              onBack={() => setStep(needsArticles ? 3 : 2)}
-              onSubmit={submitIntake}
-              onReset={reset}
-            />
-          )}
-        </section>
       </section>
     </main>
   );
@@ -203,7 +211,7 @@ function App() {
 
 function Progress({ currentStep }) {
   return (
-    <ol className="progress">
+    <ol className="progress" aria-label="Progress">
       {steps.map((label, index) => (
         <li
           key={label}
@@ -215,18 +223,6 @@ function Progress({ currentStep }) {
         </li>
       ))}
     </ol>
-  );
-}
-
-function SummaryItem({ label, complete, detail }) {
-  return (
-    <div className="summary-item">
-      <span className={complete ? "status-dot complete" : "status-dot"} />
-      <div>
-        <strong>{label}</strong>
-        <small>{detail || (complete ? "Ready" : "Pending")}</small>
-      </div>
-    </div>
   );
 }
 
@@ -290,7 +286,11 @@ function CameraCapture({ onCapture, onBack }) {
 
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: "environment" } },
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
           audio: false,
         });
 
@@ -306,7 +306,7 @@ function CameraCapture({ onCapture, onBack }) {
       } catch (error) {
         setCameraError(
           error.name === "NotAllowedError"
-            ? "Camera permission was denied. Allow camera access and refresh to continue."
+            ? "Camera permission was denied. Allow camera access and refresh."
             : "The camera could not be started on this device."
         );
       } finally {
@@ -329,7 +329,6 @@ function CameraCapture({ onCapture, onBack }) {
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-
     const context = canvas.getContext("2d");
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
 
@@ -338,7 +337,7 @@ function CameraCapture({ onCapture, onBack }) {
         if (blob) onCapture(blob);
       },
       "image/jpeg",
-      0.92
+      0.96
     );
   }
 
@@ -350,12 +349,13 @@ function CameraCapture({ onCapture, onBack }) {
           <p>{cameraError}</p>
         </div>
       ) : (
-        <>
+        <div className="camera-frame">
           <video ref={videoRef} autoPlay playsInline muted />
+          <div className="license-guide" />
           {isStarting && <div className="camera-loading">Starting camera...</div>}
-        </>
+        </div>
       )}
-      <div className="button-row">
+      <div className="button-row sticky-actions">
         {onBack && (
           <button className="secondary-button" type="button" onClick={onBack}>
             Back
@@ -378,8 +378,8 @@ function ClientTypeStep({ clientType, onChange, onBack, onNext }) {
   return (
     <div className="step-content">
       <StepHeader
-        title="Who is the prospective client?"
-        description="Articles of incorporation are only collected for entity clients."
+        title="Client type"
+        description="Entity clients need articles of incorporation."
       />
       <div className="choice-grid">
         <button
@@ -388,7 +388,7 @@ function ClientTypeStep({ clientType, onChange, onBack, onNext }) {
           onClick={() => onChange("individual")}
         >
           <strong>Individual</strong>
-          <span>Skip corporate document collection.</span>
+          <span>No corporate document required.</span>
         </button>
         <button
           className={clientType === "entity" ? "choice selected" : "choice"}
@@ -396,10 +396,10 @@ function ClientTypeStep({ clientType, onChange, onBack, onNext }) {
           onClick={() => onChange("entity")}
         >
           <strong>Corporation or entity</strong>
-          <span>Collect articles of incorporation.</span>
+          <span>Collect articles before submitting.</span>
         </button>
       </div>
-      <div className="button-row">
+      <div className="button-row sticky-actions">
         <button className="secondary-button" type="button" onClick={onBack}>
           Back
         </button>
@@ -422,8 +422,8 @@ function ArticlesStep({ file, onFile, onBack, onNext }) {
   return (
     <div className="step-content">
       <StepHeader
-        title="Upload articles of incorporation"
-        description="Drop the entity document here or select it from the device."
+        title="Articles"
+        description="Upload the articles of incorporation."
       />
       <label
         className={isDragging ? "drop-zone dragging" : "drop-zone"}
@@ -438,14 +438,13 @@ function ArticlesStep({ file, onFile, onBack, onNext }) {
           handleFiles(event.dataTransfer.files);
         }}
       >
-        <input
-          type="file"
-          onChange={(event) => handleFiles(event.target.files)}
-        />
-        <span>{file ? file.name : "Drop file or browse"}</span>
-        <small>{file ? `${Math.ceil(file.size / 1024)} KB selected` : "PDF, image, or document file"}</small>
+        <input type="file" onChange={(event) => handleFiles(event.target.files)} />
+        <span>{file ? file.name : "Tap to upload"}</span>
+        <small>
+          {file ? `${Math.ceil(file.size / 1024)} KB selected` : "PDF, image, or document"}
+        </small>
       </label>
-      <div className="button-row">
+      <div className="button-row sticky-actions">
         <button className="secondary-button" type="button" onClick={onBack}>
           Back
         </button>
@@ -475,19 +474,22 @@ function ReviewStep({
   onSubmit,
   onReset,
 }) {
+  const frontFields = result?.ocr?.front?.fields || {};
+  const backFields = result?.ocr?.back?.fields || {};
+
   return (
     <div className="step-content">
       <StepHeader
-        title={result ? "Intake collected" : "Review and submit"}
+        title={result ? "Ready for review" : "Submit packet"}
         description={
           result
-            ? "The backend saved the files temporarily and returned OCR text."
-            : "Confirm the packet before sending it to the local FastAPI backend."
+            ? "The admin dashboard now has the photos and extracted fields."
+            : "Send the photos to the local FastAPI OCR workflow."
         }
       />
       <div className="review-grid">
-        <PhotoCard title="Front license" photo={frontPhoto} />
-        <PhotoCard title="Back license" photo={backPhoto} />
+        <PhotoCard title="Front" photo={frontPhoto} />
+        <PhotoCard title="Back" photo={backPhoto} />
       </div>
       <div className="review-detail">
         <strong>Client type</strong>
@@ -504,8 +506,19 @@ function ReviewStep({
           {submitError}
         </div>
       )}
-      {result && <OcrResult result={result} />}
-      <div className="button-row">
+      {result && (
+        <section className="ocr-result">
+          <FieldGrid fields={frontFields} labels={frontFieldLabels} />
+          <div className="review-detail">
+            <strong>Back license number</strong>
+            <span>{backFields.license_number || "Needs manual review"}</span>
+          </div>
+          <a className="text-link" href="/admin">
+            Open admin dashboard
+          </a>
+        </section>
+      )}
+      <div className="button-row sticky-actions">
         {!result && (
           <button className="secondary-button" type="button" onClick={onBack}>
             Back
@@ -522,7 +535,7 @@ function ReviewStep({
             onClick={onSubmit}
             disabled={!canSubmit || isSubmitting}
           >
-            {isSubmitting ? "Submitting..." : "Submit intake"}
+            {isSubmitting ? "Extracting..." : "Submit intake"}
           </button>
         )}
       </div>
@@ -542,47 +555,193 @@ function StepHeader({ title, description }) {
 function PhotoCard({ title, photo }) {
   return (
     <figure className="photo-card">
-      {photo ? <img src={photo.previewUrl} alt={title} /> : <div />}
+      {photo ? <img src={photo.previewUrl} alt={`${title} license`} /> : <div />}
       <figcaption>{title}</figcaption>
     </figure>
   );
 }
 
-function OcrResult({ result }) {
+function FieldGrid({ fields, labels }) {
   return (
-    <section className="ocr-result" aria-label="Extracted license text">
-      <div className="review-detail">
-        <strong>Intake ID</strong>
-        <span>{result.intake_id}</span>
-      </div>
-      <OcrBlock title="Front OCR" data={result.ocr.front} />
-      <OcrBlock title="Back OCR" data={result.ocr.back} />
-    </section>
+    <div className="field-grid">
+      {Object.entries(labels).map(([key, label]) => (
+        <div className="field-row" key={key}>
+          <span>{label}</span>
+          <strong>{fields?.[key] || "Needs review"}</strong>
+        </div>
+      ))}
+    </div>
   );
 }
 
-function OcrBlock({ title, data }) {
-  const hintEntries = useMemo(
-    () =>
-      Object.entries(data.hints || {}).filter(([, values]) => values.length > 0),
-    [data]
-  );
+function AdminDashboard() {
+  const [intakes, setIntakes] = useState([]);
+  const [selectedId, setSelectedId] = useState("");
+  const [selected, setSelected] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  async function loadIntakes() {
+    setIsLoading(true);
+    setError("");
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/intakes`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Could not load intakes.");
+      setIntakes(data.intakes || []);
+      if (!selectedId && data.intakes?.[0]) setSelectedId(data.intakes[0].intake_id);
+    } catch (loadError) {
+      setError(loadError.message);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadIntakes();
+  }, []);
+
+  useEffect(() => {
+    if (!selectedId) {
+      setSelected(null);
+      return;
+    }
+
+    async function loadSelected() {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/intakes/${selectedId}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Could not load intake.");
+        setSelected(data);
+      } catch (loadError) {
+        setError(loadError.message);
+      }
+    }
+
+    loadSelected();
+  }, [selectedId]);
 
   return (
-    <article className="ocr-block">
-      <h3>{title}</h3>
-      {hintEntries.length > 0 && (
-        <div className="hint-list">
-          {hintEntries.map(([label, values]) => (
-            <div key={label}>
-              <strong>{label.replaceAll("_", " ")}</strong>
-              <span>{values.join(" | ")}</span>
-            </div>
-          ))}
+    <main className="admin-shell">
+      <header className="admin-header">
+        <div>
+          <p className="eyebrow">Admin review</p>
+          <h1>KYC dashboard</h1>
         </div>
+        <div className="admin-actions">
+          <a className="secondary-button" href="/">
+            Intake app
+          </a>
+          <button className="primary-button" type="button" onClick={loadIntakes}>
+            Refresh
+          </button>
+        </div>
+      </header>
+
+      {error && <div className="form-error">{error}</div>}
+
+      <section className="admin-grid">
+        <aside className="intake-list">
+          <h2>Submissions</h2>
+          {isLoading && <p className="muted">Loading...</p>}
+          {!isLoading && intakes.length === 0 && (
+            <p className="muted">No intakes submitted yet.</p>
+          )}
+          {intakes.map((intake) => (
+            <button
+              className={selectedId === intake.intake_id ? "intake-card selected" : "intake-card"}
+              key={intake.intake_id}
+              type="button"
+              onClick={() => setSelectedId(intake.intake_id)}
+            >
+              <strong>{intake.name || "Name needs review"}</strong>
+              <span>{intake.license_number || "License needs review"}</span>
+              <small>{new Date(intake.created_at).toLocaleString()}</small>
+            </button>
+          ))}
+        </aside>
+
+        <section className="admin-detail">
+          {selected ? <AdminRecord record={selected} /> : <EmptyAdminState />}
+        </section>
+      </section>
+    </main>
+  );
+}
+
+function AdminRecord({ record }) {
+  const frontFields = record.ocr.front.fields;
+  const backFields = record.ocr.back.fields;
+  const frontUrl = `${API_BASE_URL}/api/intakes/${record.intake_id}/files/license_front`;
+  const backUrl = `${API_BASE_URL}/api/intakes/${record.intake_id}/files/license_back`;
+  const articlesUrl = record.files.articles
+    ? `${API_BASE_URL}/api/intakes/${record.intake_id}/files/articles`
+    : null;
+
+  return (
+    <div className="admin-record">
+      <div className="record-head">
+        <div>
+          <p className="eyebrow">{record.client_type}</p>
+          <h2>{frontFields.full_name || "Name needs review"}</h2>
+        </div>
+        <span className="status-pill">Ready for review</span>
+      </div>
+
+      <div className="admin-photo-grid">
+        <figure>
+          <img src={frontUrl} alt="Front license" />
+          <figcaption>Front license</figcaption>
+        </figure>
+        <figure>
+          <img src={backUrl} alt="Back license" />
+          <figcaption>Back license</figcaption>
+        </figure>
+      </div>
+
+      <section className="admin-section">
+        <h3>Extracted front details</h3>
+        <FieldGrid fields={frontFields} labels={frontFieldLabels} />
+      </section>
+
+      <section className="admin-section">
+        <h3>Back extraction</h3>
+        <div className="review-detail">
+          <strong>License number</strong>
+          <span>{backFields.license_number || "Needs manual review"}</span>
+        </div>
+      </section>
+
+      {articlesUrl && (
+        <section className="admin-section">
+          <h3>Entity document</h3>
+          <a className="text-link" href={articlesUrl} target="_blank" rel="noreferrer">
+            Open articles of incorporation
+          </a>
+        </section>
       )}
-      <pre>{data.raw_text || "No text detected."}</pre>
-    </article>
+
+      <section className="admin-section">
+        <h3>Raw OCR text</h3>
+        <details>
+          <summary>Front raw text</summary>
+          <pre>{record.ocr.front.raw_text || "No text detected."}</pre>
+        </details>
+        <details>
+          <summary>Back raw text</summary>
+          <pre>{record.ocr.back.raw_text || "No text detected."}</pre>
+        </details>
+      </section>
+    </div>
+  );
+}
+
+function EmptyAdminState() {
+  return (
+    <div className="empty-state">
+      <h2>No intake selected</h2>
+      <p>Submitted KYC packets will appear here for photo and field review.</p>
+    </div>
   );
 }
 
