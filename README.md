@@ -1,3 +1,4 @@
+<img width="1920" height="960" alt="Screenshot 2026-08-26 at 3 02 39 PM" src="https://github.com/user-attachments/assets/07c06841-8aeb-4646-879d-95e9bb92c202" />
 # KYC Intake Prototype
 
 A hackathon-friendly client onboarding prototype with a React camera flow and a FastAPI backend that stores uploaded files temporarily and runs local Tesseract OCR on driver's license photos.
@@ -114,5 +115,8 @@ The admin dashboard is available at `http://localhost:5173/admin`.
 6. Start the Vapi web voice call for wrongful termination intake.
 7. Review OCR and locally stored voice-intake answers in `/admin`.
 
-![Alt text](<img width="1920" height="960" alt="Screenshot 2026-08-26 at 3 02 39 PM" src="https://github.com/user-attachments/assets/0a536a8f-0037-4c95-b83a-17d6e6de743b" />
-)
+<img width="1920" height="960" alt="Screenshot 2026-08-26 at 3 02 39 PM" src="https://github.com/user-attachments/assets/e9acedd8-384e-4474-8ac8-711a8a420d02" />
+
+<img width="1920" height="958" alt="Screenshot 2026-08-26 at 3 03 03 PM" src="https://github.com/user-attachments/assets/221376e5-ed08-4465-a224-e81a098e58a9" />
+
+
