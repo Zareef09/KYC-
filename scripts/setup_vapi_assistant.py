@@ -116,13 +116,6 @@ def assistant_payload() -> dict[str, Any]:
         "firstMessageMode": "assistant-speaks-first",
         "maxDurationSeconds": 900,
         "backgroundSound": "off",
-        "voice": {
-            "provider": "11labs",
-            "voiceId": os.getenv("VAPI_ELEVENLABS_VOICE_ID", "REPLACE_WITH_ELEVENLABS_VOICE_ID"),
-            "model": "eleven_turbo_v2_5",
-            "stability": 0.5,
-            "similarityBoost": 0.75,
-        },
         "compliancePlan": {
             "hipaaEnabled": True,
         },
@@ -186,6 +179,17 @@ def assistant_payload() -> dict[str, Any]:
     url = webhook_url()
     if url:
         payload["server"] = {"url": url}
+
+    voice_id = os.getenv("VAPI_ELEVENLABS_VOICE_ID", "").strip()
+    if voice_id:
+        payload["voice"] = {
+            "provider": "11labs",
+            "voiceId": voice_id,
+            "model": "eleven_turbo_v2_5",
+            "stability": 0.5,
+            "similarityBoost": 0.75,
+        }
+
     return payload
 
 
