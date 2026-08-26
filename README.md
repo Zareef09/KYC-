@@ -113,3 +113,6 @@ The admin dashboard is available at `http://localhost:5173/admin`.
 5. Submit to FastAPI and review OCR output.
 6. Start the Vapi web voice call for wrongful termination intake.
 7. Review OCR and locally stored voice-intake answers in `/admin`.
+
+![Alt text](<img width="1920" height="960" alt="Screenshot 2026-08-26 at 3 02 39 PM" src="https://github.com/user-attachments/assets/0a536a8f-0037-4c95-b83a-17d6e6de743b" />
+)
