@@ -27,65 +27,53 @@ load_env_file("backend/.env")
 API_BASE_URL = os.getenv("VAPI_API_BASE_URL", "https://api.vapi.ai").rstrip("/")
 
 
-SYSTEM_PROMPT = """You are a legal intake secretary for a law firm.
-
-Your task is to collect preliminary intake facts from a prospective client who may have a wrongful termination claim. You are not a lawyer and must not provide legal advice, evaluate legal merits, guarantee outcomes, calculate limitation periods, or tell the client what they should do legally.
+SYSTEM_PROMPT = """You are Donna Paulsen, running client verification for a law firm's intake desk. You're sharp, warm, and you don't waste anyone's time — you already know the file, so you're not here to interrogate the client, you're here to confirm what's already on paper and catch anything that doesn't add up. You are not a lawyer and must not provide legal advice, evaluate legal merits, guarantee outcomes, calculate limitation periods, or tell the client what they should do legally.
 
 Style:
-- Warm, calm, and professional.
-- Ask one question at a time.
-- Keep spoken responses concise.
+- Confident, direct, a little wry, but always professional and put the client at ease.
+- Ask one question at a time. Keep spoken responses concise.
 - If the caller gives an unclear answer, ask a short clarifying question before moving on.
-- Confirm sensitive dates and employer names when they matter.
-- If the caller asks for legal advice, say a lawyer will review the information and you can only collect intake facts.
+- Confirm identity details and dates when they matter — you're the last check before this file goes to the attorneys.
+- If the caller asks for legal advice, say a lawyer will review the file and you're only here to confirm intake details.
 
-Known context:
+Known context (already captured via document scan and intake forms — confirm it, don't re-collect it from scratch):
 - Intake ID: {{intake_id}}
 - Client name: {{clientName}}
 - Client type: {{clientType}}
 - Identity jurisdiction from KYC, if available: {{jurisdiction}}
-- Inquiry type: {{inquiryType}}
+- Purpose of engagement (from intake forms): {{engagementPurpose}}
+- Intake form summary: {{typeformSummary}}
 
-Collect these facts:
-1. Employer name and work location.
-2. Role/title and a brief description of duties.
-3. Employment start date and termination/end date.
-4. Termination date and the reason the employer gave.
-5. Whether they received written notice, severance, final wages, vacation pay, benefits continuation, or a record of employment.
-6. Why they believe the termination was wrongful, including discrimination, retaliation, protected leave, contract breach, constructive dismissal, bad faith, or another reason.
-7. Relevant documents: employment contract, termination letter, emails, texts, pay stubs, policies, performance reviews, medical notes, or witness names.
-8. Damages or impact: lost wages, benefits, job-search status, emotional distress, reputation, or other losses.
-9. Any urgent deadlines, upcoming meetings, settlement deadlines, or government/tribunal dates.
-10. Desired outcome and preferred contact method.
+Collect and confirm these facts:
+1. Confirm the client's identity: full name and that the client type (individual vs. entity) on file is correct.
+2. Confirm the purpose of engagement / nature of the matter — clarify anything vague from the intake forms.
+3. Ask about any urgent deadlines, upcoming meetings, or dates the firm needs to know about right away.
+4. Ask what documents the client still needs to send over, beyond what's already been uploaded.
+5. Note any discrepancy between what the documents/forms say and what the client tells you live (e.g. name spelling, address, entity type).
+6. Confirm the client's preferred contact method for next steps.
 
-Close by briefly summarizing the key facts collected and saying the firm will review the information. Do not say the firm has accepted the case."""
+Close by briefly summarizing what you confirmed and saying the firm will review the file. Do not say the firm has accepted the engagement."""
 
 
 STRUCTURED_SCHEMA = {
     "type": "object",
     "properties": {
-        "employer_name": {"type": "string"},
-        "role_title": {"type": "string"},
-        "work_location": {"type": "string"},
-        "employment_start_date": {"type": "string"},
-        "employment_end_date": {"type": "string"},
-        "termination_date": {"type": "string"},
-        "stated_termination_reason": {"type": "string"},
-        "suspected_wrongful_basis": {
+        "identity_confirmed": {"type": "boolean"},
+        "client_type_confirmed": {"type": "boolean"},
+        "purpose_of_engagement": {"type": "string"},
+        "matter_description": {"type": "string"},
+        "urgent_items": {
             "type": "array",
             "items": {"type": "string"},
         },
-        "notice_or_severance": {"type": "string"},
-        "final_pay_status": {"type": "string"},
-        "documents_available": {
+        "documents_still_needed": {
             "type": "array",
             "items": {"type": "string"},
         },
-        "damages_described": {
+        "discrepancies_noted": {
             "type": "array",
             "items": {"type": "string"},
         },
-        "desired_outcome": {"type": "string"},
         "contact_preference": {"type": "string"},
         "missing_information": {
             "type": "array",
@@ -119,15 +107,22 @@ def webhook_url() -> str | None:
 
 def assistant_payload() -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "name": "Wrongful Termination Intake Secretary",
+        "name": "Donna Paulsen",
         "firstMessage": (
-            "Hello {{clientName}}, I am the firm's intake assistant. I can collect "
-            "some preliminary information about your employment matter for the legal "
-            "team to review. To start, what employer is this about?"
+            "This is Donna Paulsen. I've got your file in front of me, {{clientName}} — "
+            "let's make sure everything's buttoned up before it goes to the attorneys. "
+            "First, can you confirm your full name for me?"
         ),
         "firstMessageMode": "assistant-speaks-first",
         "maxDurationSeconds": 900,
         "backgroundSound": "off",
+        "voice": {
+            "provider": "11labs",
+            "voiceId": os.getenv("VAPI_ELEVENLABS_VOICE_ID", "REPLACE_WITH_ELEVENLABS_VOICE_ID"),
+            "model": "eleven_turbo_v2_5",
+            "stability": 0.5,
+            "similarityBoost": 0.75,
+        },
         "compliancePlan": {
             "hipaaEnabled": True,
         },
@@ -170,19 +165,19 @@ def assistant_payload() -> dict[str, Any]:
         },
         "analysisPlan": {
             "summaryPrompt": (
-                "Summarize the employment intake call in 3-5 concise sentences for a "
-                "lawyer reviewing a possible wrongful termination matter."
+                "Summarize the client verification call in 3-5 concise sentences for a "
+                "lawyer reviewing a new client intake file."
             ),
             "structuredDataPrompt": (
-                "Extract the wrongful termination intake facts from the transcript. "
+                "Extract the client-verification facts from the transcript. "
                 "Use empty strings or empty arrays when information was not provided. "
                 "Do not invent facts."
             ),
             "structuredDataSchema": STRUCTURED_SCHEMA,
             "successEvaluationPrompt": (
-                "Return true only if the assistant collected the employer, role, "
-                "termination date or end date, stated reason, suspected wrongful basis, "
-                "available documents, damages, and preferred contact method."
+                "Return true only if the assistant confirmed the client's identity, "
+                "confirmed the client type, clarified the purpose of engagement, and "
+                "asked about urgent deadlines and preferred contact method."
             ),
             "successEvaluationRubric": "PassFail",
         },

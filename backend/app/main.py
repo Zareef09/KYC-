@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -8,17 +11,21 @@ import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps, UnidentifiedImageError
+from pydantic import BaseModel
 import pytesseract
+
+from . import db
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "uploads"
+DB_PATH = BASE_DIR / "data.db"
 
 
 def load_local_env() -> None:
@@ -35,11 +42,16 @@ def load_local_env() -> None:
 
 
 load_local_env()
+db.init_db(DB_PATH)
 
 ALLOWED_CLIENT_TYPES = {"individual", "entity"}
 FILE_KEYS = {"license_front", "license_back", "articles"}
 VAPI_WEBHOOK_SECRET = os.getenv("VAPI_WEBHOOK_SECRET", "")
 VAPI_ASSISTANT_ID = os.getenv("VAPI_ASSISTANT_ID", "")
+TYPEFORM_WEBHOOK_SECRET = os.getenv("TYPEFORM_WEBHOOK_SECRET", "")
+TYPEFORM_FORM1_URL = os.getenv("TYPEFORM_FORM1_URL", "")
+TYPEFORM_FORM1_ID = os.getenv("TYPEFORM_FORM1_ID", "")
+TYPEFORM_FORM2_ID = os.getenv("TYPEFORM_FORM2_ID", "")
 
 DATE_PATTERN = re.compile(r"\b(?:19|20)\d{2}[-/]\d{2}[-/]\d{2}\b")
 POSTAL_PATTERN = re.compile(r"\b(?:[A-Z]\d[A-Z][ -]?\d[A-Z]\d|\d{6})\b", re.I)
@@ -432,71 +444,123 @@ def extract_sex(lines: list[str]) -> str | None:
     return None
 
 
-def record_path(intake_id: str) -> Path:
-    return UPLOAD_DIR / intake_id / "record.json"
-
-
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def write_record(record: dict[str, object]) -> None:
-    path = record_path(str(record["intake_id"]))
-    path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+def typeform_answer_value(answer: dict[str, Any]) -> Any:
+    answer_type = answer.get("type")
+    if answer_type == "choice":
+        choice = answer.get("choice") or {}
+        return choice.get("label") or choice.get("other")
+    if answer_type == "choices":
+        choices = answer.get("choices") or {}
+        return choices.get("labels") or choices.get("other")
+    if answer_type == "number":
+        return answer.get("number")
+    if answer_type == "boolean":
+        return answer.get("boolean")
+    if answer_type:
+        return answer.get(answer_type)
+    return None
 
 
-def read_record(intake_id: str) -> dict[str, object]:
-    path = record_path(intake_id)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Intake not found.")
-    return json.loads(path.read_text(encoding="utf-8"))
+def flatten_typeform_answers(form_response: dict[str, Any]) -> dict[str, Any]:
+    answers: dict[str, Any] = {}
+    for answer in form_response.get("answers") or []:
+        ref = (answer.get("field") or {}).get("ref")
+        if ref:
+            answers[ref] = typeform_answer_value(answer)
+    return answers
 
 
-def intake_summary(record: dict[str, object]) -> dict[str, object]:
-    front_fields = record["ocr"]["front"]["fields"]
-    voice_intake = record.get("voice_intake") or {}
+def humanize_typeform_submission(raw_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    form_response = raw_payload.get("form_response") or {}
+    definition_fields = (form_response.get("definition") or {}).get("fields") or []
+    titles_by_ref = {
+        field.get("ref"): field.get("title")
+        for field in definition_fields
+        if field.get("ref")
+    }
+
+    items = []
+    for answer in form_response.get("answers") or []:
+        ref = (answer.get("field") or {}).get("ref")
+        value = typeform_answer_value(answer)
+        if value in (None, "", []):
+            continue
+        items.append({"label": titles_by_ref.get(ref, ref or "Answer"), "value": value})
+    return items
+
+
+def intake_summary_from_client(client: dict[str, object]) -> dict[str, object]:
+    client_id = str(client["id"])
+    front_fields = db.get_ocr_fields(client_id, "front")
+    voice_intake = db.get_or_init_voice_intake(client_id)
     return {
-        "intake_id": record["intake_id"],
-        "created_at": record["created_at"],
-        "client_type": record["client_type"],
-        "name": front_fields.get("full_name"),
+        "intake_id": client_id,
+        "created_at": client["created_at"],
+        "client_type": client["client_type"],
+        "name": client.get("full_name") or front_fields.get("full_name"),
         "license_number": front_fields.get("license_number"),
         "date_of_birth": front_fields.get("date_of_birth"),
         "voice_status": voice_intake.get("status", "not_started"),
-        "status": "ready_for_review",
+        "status": client.get("status") or "pending",
     }
 
 
-def empty_voice_intake() -> dict[str, object]:
+def build_intake_response(intake_id: str) -> dict[str, object]:
+    client = db.get_client(intake_id)
+    files_map = db.get_files(intake_id)
+    front_file = files_map.get("license_front")
+    back_file = files_map.get("license_back")
+    articles_file = files_map.get("articles")
+
+    typeform_submissions = [
+        {
+            "source": submission["source"],
+            "received_at": submission["received_at"],
+            "answers": humanize_typeform_submission(submission["raw_payload"]),
+        }
+        for submission in db.list_typeform_submissions(intake_id)
+    ]
+
     return {
-        "status": "not_started",
-        "call_id": None,
-        "started_at": None,
-        "ended_at": None,
-        "ended_reason": None,
-        "messages": [],
-        "transcript_events": [],
-        "summary": None,
-        "structured_answers": {},
-        "success_evaluation": None,
-        "missing_information": [],
-        "urgent_deadline_flags": [],
-        "attorney_review_notes": [],
-        "last_event_at": None,
-        "client_events": [],
+        "intake_id": intake_id,
+        "created_at": client["created_at"] if client else None,
+        "client_type": client["client_type"] if client else None,
+        "files": {
+            "license_front": front_file["file_path"] if front_file else None,
+            "license_back": back_file["file_path"] if back_file else None,
+            "articles": articles_file["file_path"] if articles_file else None,
+        },
+        "ocr": {
+            "front": {
+                "raw_text": (front_file or {}).get("raw_ocr_text") or "",
+                "fields": db.get_ocr_fields(intake_id, "front"),
+            },
+            "back": {
+                "raw_text": (back_file or {}).get("raw_ocr_text") or "",
+                "crop_text": (back_file or {}).get("crop_ocr_text") or "",
+                "fields": db.get_ocr_fields(intake_id, "back"),
+            },
+        },
+        "voice_intake": db.get_or_init_voice_intake(intake_id),
+        "client": (
+            {
+                "full_name": client.get("full_name"),
+                "email": client.get("email"),
+                "phone": client.get("phone"),
+                "client_type": client.get("client_type"),
+                "status": client.get("status"),
+                "created_at": client.get("created_at"),
+                "updated_at": client.get("updated_at"),
+            }
+            if client
+            else None
+        ),
+        "typeform_submissions": typeform_submissions,
     }
-
-
-def ensure_voice_intake(record: dict[str, object]) -> dict[str, object]:
-    voice_intake = record.get("voice_intake")
-    if not isinstance(voice_intake, dict):
-        voice_intake = empty_voice_intake()
-        record["voice_intake"] = voice_intake
-
-    defaults = empty_voice_intake()
-    for key, value in defaults.items():
-        voice_intake.setdefault(key, value)
-    return voice_intake
 
 
 def compact_message(message: dict[str, Any]) -> dict[str, Any]:
@@ -605,8 +669,7 @@ def list_from_structured(structured: dict[str, Any], key: str) -> list[Any]:
     return []
 
 
-def apply_vapi_message(record: dict[str, object], message: dict[str, Any]) -> None:
-    voice_intake = ensure_voice_intake(record)
+def apply_vapi_message(voice_intake: dict[str, object], message: dict[str, Any]) -> None:
     message_type = str(message.get("type") or "unknown")
     call_id = extract_call_id(message)
     if call_id:
@@ -677,9 +740,8 @@ def apply_vapi_message(record: dict[str, object], message: dict[str, Any]) -> No
 
 
 def apply_client_voice_event(
-    record: dict[str, object], event_type: str, payload: dict[str, Any]
+    voice_intake: dict[str, object], event_type: str, payload: dict[str, Any]
 ) -> None:
-    voice_intake = ensure_voice_intake(record)
     call_id = first_string(payload.get("call_id"), payload.get("callId"))
     if call_id:
         voice_intake["call_id"] = call_id
@@ -695,7 +757,7 @@ def apply_client_voice_event(
     elif event_type == "vapi-message":
         message = payload.get("message")
         if isinstance(message, dict):
-            apply_vapi_message(record, message)
+            apply_vapi_message(voice_intake, message)
             return
 
     event = {
@@ -719,28 +781,95 @@ def health() -> dict[str, object]:
             "assistant_configured": bool(VAPI_ASSISTANT_ID),
             "webhook_secret_configured": bool(VAPI_WEBHOOK_SECRET),
         },
+        "typeform": {
+            "form1_configured": bool(TYPEFORM_FORM1_URL and TYPEFORM_FORM1_ID),
+            "form2_configured": bool(TYPEFORM_FORM2_ID),
+            "webhook_secret_configured": bool(TYPEFORM_WEBHOOK_SECRET),
+        },
     }
+
+
+@app.get("/api/clients/new")
+def start_client() -> RedirectResponse:
+    if not TYPEFORM_FORM1_URL:
+        raise HTTPException(status_code=503, detail="Typeform Form 1 URL is not configured.")
+
+    client_id = uuid.uuid4().hex
+    db.upsert_client(client_id, status="pending", created_at=utc_now())
+    separator = "&" if "?" in TYPEFORM_FORM1_URL else "?"
+    return RedirectResponse(f"{TYPEFORM_FORM1_URL}{separator}client_token={client_id}", status_code=302)
+
+
+def typeform_webhook_authorized(raw_body: bytes, signature: str | None) -> bool:
+    if not TYPEFORM_WEBHOOK_SECRET:
+        return True
+    if not signature or not signature.startswith("sha256="):
+        return False
+
+    expected = hmac.new(TYPEFORM_WEBHOOK_SECRET.encode("utf-8"), raw_body, hashlib.sha256).digest()
+    expected_header = "sha256=" + base64.b64encode(expected).decode("utf-8")
+    return hmac.compare_digest(expected_header, signature)
+
+
+@app.post("/api/webhooks/typeform")
+async def receive_typeform_webhook(
+    request: Request,
+    typeform_signature: Annotated[str | None, Header(alias="Typeform-Signature")] = None,
+) -> dict[str, object]:
+    raw_body = await request.body()
+    if not typeform_webhook_authorized(raw_body, typeform_signature):
+        raise HTTPException(status_code=401, detail="Invalid Typeform signature.")
+
+    payload = json.loads(raw_body)
+    form_response = payload.get("form_response") or {}
+    form_id = form_response.get("form_id")
+    response_token = form_response.get("token")
+    hidden = form_response.get("hidden") or {}
+    client_id = first_string(hidden.get("client_token")) or response_token
+
+    if not client_id or not response_token:
+        return {"status": "ignored", "reason": "missing client_token or response token"}
+
+    if form_id == TYPEFORM_FORM1_ID:
+        source = "typeform_1"
+    elif form_id == TYPEFORM_FORM2_ID:
+        source = "typeform_2"
+    else:
+        source = "typeform_unknown"
+
+    db.upsert_client(client_id, created_at=utc_now())
+    inserted = db.insert_submission(client_id, source, response_token, payload)
+    if not inserted:
+        return {"status": "ok", "reason": "duplicate", "client_id": client_id}
+
+    answers = flatten_typeform_answers(form_response)
+    db.upsert_client_from_typeform(client_id, source, answers)
+    return {"status": "ok", "client_id": client_id, "source": source}
+
+
+class StatusUpdate(BaseModel):
+    status: Literal["pending", "in_progress", "ready_for_review", "approved", "rejected"]
+
+
+@app.post("/api/intakes/{intake_id}/status")
+def update_status(intake_id: str, body: StatusUpdate) -> dict[str, object]:
+    if db.get_client(intake_id) is None:
+        raise HTTPException(status_code=404, detail="Intake not found.")
+    db.set_client_status(intake_id, body.status)
+    return {"status": "ok", "client_status": body.status}
 
 
 @app.get("/api/intakes")
 def list_intakes() -> dict[str, object]:
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    records = []
-    for path in UPLOAD_DIR.glob("*/record.json"):
-        try:
-            records.append(json.loads(path.read_text(encoding="utf-8")))
-        except json.JSONDecodeError:
-            continue
-
-    records.sort(key=lambda record: str(record.get("created_at", "")), reverse=True)
-    return {"intakes": [intake_summary(record) for record in records]}
+    clients = db.list_clients()
+    return {"intakes": [intake_summary_from_client(client) for client in clients]}
 
 
 @app.get("/api/intakes/{intake_id}")
 def get_intake(intake_id: str) -> dict[str, object]:
-    record = read_record(intake_id)
-    ensure_voice_intake(record)
-    return record
+    if db.get_client(intake_id) is None:
+        raise HTTPException(status_code=404, detail="Intake not found.")
+    return build_intake_response(intake_id)
 
 
 @app.get("/api/intakes/{intake_id}/files/{file_key}")
@@ -748,12 +877,11 @@ def get_intake_file(intake_id: str, file_key: str) -> FileResponse:
     if file_key not in FILE_KEYS:
         raise HTTPException(status_code=404, detail="File not found.")
 
-    record = read_record(intake_id)
-    filename = record["files"].get(file_key)
-    if not filename:
+    file_row = db.get_files(intake_id).get(file_key)
+    if not file_row:
         raise HTTPException(status_code=404, detail="File not found.")
 
-    path = UPLOAD_DIR / intake_id / filename
+    path = UPLOAD_DIR / intake_id / file_row["file_path"]
     if not path.exists():
         raise HTTPException(status_code=404, detail="File not found.")
 
@@ -762,12 +890,15 @@ def get_intake_file(intake_id: str, file_key: str) -> FileResponse:
 
 @app.post("/api/intakes/{intake_id}/voice-events")
 async def update_voice_event(intake_id: str, request: Request) -> dict[str, object]:
-    record = read_record(intake_id)
+    if db.get_client(intake_id) is None:
+        raise HTTPException(status_code=404, detail="Intake not found.")
+
     payload = await request.json()
     event_type = first_string(payload.get("type"), payload.get("event")) or "unknown"
-    apply_client_voice_event(record, event_type, payload)
-    write_record(record)
-    return {"status": "ok", "voice_intake": record["voice_intake"]}
+    voice_intake = db.get_or_init_voice_intake(intake_id)
+    apply_client_voice_event(voice_intake, event_type, payload)
+    db.update_voice_intake(intake_id, voice_intake)
+    return {"status": "ok", "voice_intake": voice_intake}
 
 
 def webhook_authorized(
@@ -807,9 +938,12 @@ async def receive_vapi_webhook(
     if not intake_id:
         return {"status": "ignored", "reason": "missing intake_id"}
 
-    record = read_record(intake_id)
-    apply_vapi_message(record, message)
-    write_record(record)
+    if db.get_client(intake_id) is None:
+        return {"status": "ignored", "reason": "unknown intake_id"}
+
+    voice_intake = db.get_or_init_voice_intake(intake_id)
+    apply_vapi_message(voice_intake, message)
+    db.update_voice_intake(intake_id, voice_intake)
     return {
         "status": "ok",
         "intake_id": intake_id,
@@ -823,6 +957,7 @@ async def create_intake(
     license_front: Annotated[UploadFile, File()],
     license_back: Annotated[UploadFile, File()],
     articles: Annotated[UploadFile | None, File()] = None,
+    client_token: Annotated[str | None, Form()] = None,
 ) -> dict[str, object]:
     normalized_client_type = client_type.strip().lower()
 
@@ -838,7 +973,7 @@ async def create_intake(
             detail="articles file is required when client_type is 'entity'.",
         )
 
-    intake_id = str(uuid.uuid4())
+    intake_id = (client_token or "").strip() or str(uuid.uuid4())
     intake_dir = UPLOAD_DIR / intake_id
 
     try:
@@ -860,20 +995,28 @@ async def create_intake(
             shutil.rmtree(intake_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    record = {
-        "intake_id": intake_id,
-        "created_at": utc_now(),
-        "client_type": normalized_client_type,
-        "files": {
-            "license_front": front_path.name,
-            "license_back": back_path.name,
-            "articles": articles_path.name if articles_path else None,
-        },
-        "ocr": {
-            "front": front_ocr,
-            "back": back_ocr,
-        },
-        "voice_intake": empty_voice_intake(),
-    }
-    write_record(record)
-    return record
+    db.upsert_client(
+        intake_id,
+        client_type=normalized_client_type,
+        status="ready_for_review",
+        created_at=utc_now(),
+    )
+    db.upsert_file(
+        intake_id, "license_front", front_path.name, raw_ocr_text=front_ocr["raw_text"]
+    )
+    db.upsert_file(
+        intake_id,
+        "license_back",
+        back_path.name,
+        raw_ocr_text=back_ocr["raw_text"],
+        crop_ocr_text=back_ocr.get("crop_text"),
+    )
+    if articles_path is not None:
+        db.upsert_file(intake_id, "articles", articles_path.name)
+
+    db.upsert_ocr_fields(intake_id, "front", front_ocr["fields"])
+    db.upsert_ocr_fields(intake_id, "back", back_ocr["fields"])
+    db.insert_submission(intake_id, "kyc_app", intake_id, {"client_type": normalized_client_type})
+    db.get_or_init_voice_intake(intake_id)
+
+    return build_intake_response(intake_id)

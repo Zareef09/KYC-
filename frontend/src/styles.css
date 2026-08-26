@@ -577,6 +577,24 @@ p {
   padding: 7px 10px;
 }
 
+.status-pill.status-rejected {
+  background: #fdeceb;
+  color: #c92a2a;
+}
+
+.status-pill.status-pending,
+.status-pill.status-in_progress {
+  background: #fff4e0;
+  color: #b06400;
+}
+
+.status-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .admin-photo-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }

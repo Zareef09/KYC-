@@ -29,21 +29,27 @@ const frontFieldLabels = {
 };
 
 const voiceAnswerLabels = {
-  employer_name: "Employer",
-  role_title: "Role",
-  work_location: "Work location",
-  employment_start_date: "Start date",
-  employment_end_date: "End date",
-  termination_date: "Termination date",
-  stated_termination_reason: "Stated reason",
-  suspected_wrongful_basis: "Suspected basis",
-  notice_or_severance: "Notice or severance",
-  final_pay_status: "Final pay",
-  documents_available: "Documents",
-  damages_described: "Damages",
-  desired_outcome: "Desired outcome",
+  identity_confirmed: "Identity confirmed",
+  client_type_confirmed: "Client type confirmed",
+  purpose_of_engagement: "Purpose of engagement",
+  matter_description: "Matter description",
+  urgent_items: "Urgent items",
+  documents_still_needed: "Documents still needed",
+  discrepancies_noted: "Discrepancies noted",
   contact_preference: "Contact preference",
 };
+
+const statusLabels = {
+  pending: "Pending",
+  in_progress: "In progress",
+  ready_for_review: "Ready for review",
+  approved: "Approved",
+  rejected: "Rejected",
+};
+
+function statusLabel(status) {
+  return statusLabels[status] || status || "Pending";
+}
 
 function App() {
   const isAdmin = window.location.pathname.startsWith("/admin");
@@ -59,6 +65,13 @@ function IntakeApp() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [result, setResult] = useState(null);
+  const [clientToken] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("client_token") || "";
+    } catch {
+      return "";
+    }
+  });
 
   const needsArticles = clientType === "entity";
   const effectiveStep = !needsArticles && step === 3 ? 4 : step;
@@ -116,6 +129,10 @@ function IntakeApp() {
 
     if (needsArticles && articlesFile) {
       formData.append("articles", articlesFile, articlesFile.name);
+    }
+
+    if (clientToken) {
+      formData.append("client_token", clientToken);
     }
 
     setIsSubmitting(true);
@@ -572,16 +589,51 @@ function VoiceIntakeStep({ intake }) {
   const [error, setError] = useState("");
 
   const frontFields = intake?.ocr?.front?.fields || {};
+  const client = intake?.client || {};
+  const typeformSubmissions = intake?.typeform_submissions || [];
+
+  const typeformSummary = useMemo(() => {
+    const parts = [];
+    typeformSubmissions.forEach((submission) => {
+      (submission.answers || []).forEach((answer) => {
+        const value = Array.isArray(answer.value) ? answer.value.join(", ") : answer.value;
+        parts.push(`${answer.label}: ${value}`);
+      });
+    });
+    return parts.join("; ");
+  }, [typeformSubmissions]);
+
+  const engagementPurpose = useMemo(() => {
+    for (const submission of typeformSubmissions) {
+      for (const answer of submission.answers || []) {
+        if (/purpose|matter|engagement/i.test(answer.label)) {
+          return Array.isArray(answer.value) ? answer.value.join(", ") : String(answer.value);
+        }
+      }
+    }
+    return "";
+  }, [typeformSubmissions]);
+
   const variableValues = useMemo(
     () => ({
       intake_id: intake?.intake_id || "",
       intakeId: intake?.intake_id || "",
-      clientName: frontFields.full_name || "the prospective client",
-      clientType: intake?.client_type || "individual",
+      clientName: client.full_name || frontFields.full_name || "the client",
+      clientType: client.client_type || intake?.client_type || "individual",
       jurisdiction: frontFields.province || "unknown",
-      inquiryType: "wrongful termination",
+      engagementPurpose: engagementPurpose || "not specified",
+      typeformSummary: typeformSummary || "no intake form data available",
     }),
-    [frontFields.full_name, frontFields.province, intake?.client_type, intake?.intake_id]
+    [
+      client.full_name,
+      client.client_type,
+      frontFields.full_name,
+      frontFields.province,
+      intake?.client_type,
+      intake?.intake_id,
+      engagementPurpose,
+      typeformSummary,
+    ]
   );
 
   async function sendVoiceEvent(type, payload = {}) {
@@ -685,17 +737,18 @@ function VoiceIntakeStep({ intake }) {
   }[callStatus] || callStatus;
 
   return (
-    <section className="voice-panel" aria-label="Wrongful termination voice intake">
+    <section className="voice-panel" aria-label="Donna Paulsen client verification call">
       <div className="voice-head">
         <div>
-          <p className="eyebrow">Legal intake</p>
-          <h3>Wrongful termination voice intake</h3>
+          <p className="eyebrow">Client verification</p>
+          <h3>Donna Paulsen — client verification call</h3>
         </div>
         <span className="status-pill">{statusLabel}</span>
       </div>
       <p>
-        Start a web voice call with the legal secretary agent. The final transcript and
-        answers are saved to this local intake record through the Vapi webhook.
+        Start a web voice call with Donna. She'll confirm what's already on file and flag
+        anything that needs attorney attention. The transcript and answers are saved to this
+        record through the Vapi webhook.
       </p>
       {callId && (
         <div className="review-detail">
@@ -715,7 +768,7 @@ function VoiceIntakeStep({ intake }) {
           </button>
         ) : (
           <button className="primary-button" type="button" onClick={startVoiceIntake}>
-            Start voice intake
+            Start verification call
           </button>
         )}
       </div>
@@ -741,16 +794,44 @@ function PhotoCard({ title, photo }) {
   );
 }
 
+function formatFieldValue(value) {
+  if (value === null || value === undefined || value === "") return "Needs review";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (Array.isArray(value)) return value.length ? value.join(", ") : "Needs review";
+  return value;
+}
+
 function FieldGrid({ fields, labels }) {
   return (
     <div className="field-grid">
       {Object.entries(labels).map(([key, label]) => (
         <div className="field-row" key={key}>
           <span>{label}</span>
-          <strong>{fields?.[key] || "Needs review"}</strong>
+          <strong>{formatFieldValue(fields?.[key])}</strong>
         </div>
       ))}
     </div>
+  );
+}
+
+function TypeformSubmissions({ submissions }) {
+  return (
+    <section className="admin-section">
+      <h3>Intake form answers</h3>
+      {submissions.map((submission, index) => (
+        <div key={`${submission.source}-${index}`}>
+          <p className="eyebrow">{submission.source.replace("_", " ")}</p>
+          <div className="field-grid">
+            {(submission.answers || []).map((answer, answerIndex) => (
+              <div className="field-row" key={`${submission.source}-${answerIndex}`}>
+                <span>{answer.label}</span>
+                <strong>{formatFieldValue(answer.value)}</strong>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -801,6 +882,29 @@ function AdminDashboard() {
     loadSelected();
   }, [selectedId]);
 
+  async function updateStatus(intakeId, status) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/intakes/${intakeId}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || "Could not update status.");
+
+      setIntakes((prev) =>
+        prev.map((intake) => (intake.intake_id === intakeId ? { ...intake, status } : intake))
+      );
+      setSelected((prev) =>
+        prev && prev.intake_id === intakeId
+          ? { ...prev, client: { ...(prev.client || {}), status } }
+          : prev
+      );
+    } catch (updateError) {
+      setError(updateError.message);
+    }
+  }
+
   return (
     <main className="admin-shell">
       <header className="admin-header">
@@ -836,6 +940,7 @@ function AdminDashboard() {
             >
               <strong>{intake.name || "Name needs review"}</strong>
               <span>{intake.license_number || "License needs review"}</span>
+              <small>Status: {statusLabel(intake.status)}</small>
               <small>Voice: {intake.voice_status || "not_started"}</small>
               <small>{new Date(intake.created_at).toLocaleString()}</small>
             </button>
@@ -843,16 +948,22 @@ function AdminDashboard() {
         </aside>
 
         <section className="admin-detail">
-          {selected ? <AdminRecord record={selected} /> : <EmptyAdminState />}
+          {selected ? (
+            <AdminRecord record={selected} onStatusChange={updateStatus} />
+          ) : (
+            <EmptyAdminState />
+          )}
         </section>
       </section>
     </main>
   );
 }
 
-function AdminRecord({ record }) {
+function AdminRecord({ record, onStatusChange }) {
   const frontFields = record.ocr.front.fields;
   const backFields = record.ocr.back.fields;
+  const client = record.client || {};
+  const status = client.status || "pending";
   const frontUrl = `${API_BASE_URL}/api/intakes/${record.intake_id}/files/license_front`;
   const backUrl = `${API_BASE_URL}/api/intakes/${record.intake_id}/files/license_back`;
   const articlesUrl = record.files.articles
@@ -863,11 +974,50 @@ function AdminRecord({ record }) {
     <div className="admin-record">
       <div className="record-head">
         <div>
-          <p className="eyebrow">{record.client_type}</p>
-          <h2>{frontFields.full_name || "Name needs review"}</h2>
+          <p className="eyebrow">{record.client_type || client.client_type}</p>
+          <h2>{client.full_name || frontFields.full_name || "Name needs review"}</h2>
         </div>
-        <span className="status-pill">Ready for review</span>
+        <div className="status-actions">
+          <span className={`status-pill status-${status}`}>{statusLabel(status)}</span>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => onStatusChange(record.intake_id, "approved")}
+            disabled={status === "approved"}
+          >
+            Approve
+          </button>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => onStatusChange(record.intake_id, "rejected")}
+            disabled={status === "rejected"}
+          >
+            Reject
+          </button>
+        </div>
       </div>
+
+      {(client.email || client.phone) && (
+        <div className="field-grid">
+          {client.email && (
+            <div className="field-row">
+              <span>Email</span>
+              <strong>{client.email}</strong>
+            </div>
+          )}
+          {client.phone && (
+            <div className="field-row">
+              <span>Phone</span>
+              <strong>{client.phone}</strong>
+            </div>
+          )}
+        </div>
+      )}
+
+      {record.typeform_submissions?.length > 0 && (
+        <TypeformSubmissions submissions={record.typeform_submissions} />
+      )}
 
       <div className="admin-photo-grid">
         <figure>
