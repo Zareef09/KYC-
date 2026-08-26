@@ -9,7 +9,7 @@ A hackathon-friendly client onboarding prototype with a React camera flow and a 
 - Stored voice intake status, call IDs, transcript messages, summaries, structured answers, missing information, urgent deadline flags, and attorney review notes in each local intake record.
 - Added a browser-side Vapi call flow that passes intake context into the assistant and syncs local call events back to FastAPI.
 - Expanded the admin dashboard with voice-intake status, call details, structured legal-intake answers, transcript review, and OCR/file review in one place.
-- Added local environment examples and a `scripts/setup_vapi_assistant.py` helper for creating or updating the Vapi assistant with privacy-oriented artifact settings.
+- Added local environment examples and a `scripts/setup_vapi_assistant.py` helper for creating or updating the Vapi assistant with privacy-oriented artifact settings.\
 
 ## Requirements
 
