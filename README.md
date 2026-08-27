@@ -84,10 +84,10 @@ The script enables assistant-level `compliancePlan.hipaaEnabled`, disables Vapi
 recording/logging artifacts, and configures webhook events so transcripts and
 structured answers can be stored locally in each intake record.
 
-For local webhook testing, expose FastAPI through a tunnel or use Vapi CLI forwarding
+for local webhook testing, expose FastAPI through a tunnel or use Vapi CLI forwarding
 to `http://localhost:8000/api/webhooks/vapi`.
 
-When `VAPI_WEBHOOK_SECRET` is set, the setup script appends it as `?secret=...` to
+when `VAPI_WEBHOOK_SECRET` is set, the setup script appends it as `?secret=...` to
 the configured server URL. The FastAPI webhook also accepts the same value through
 `X-Vapi-Secret` or `Authorization: Bearer ...`.
 
@@ -113,7 +113,7 @@ The admin dashboard is available at `http://localhost:5173/admin`.
 4. If entity, upload articles of incorporation.
 5. Submit to FastAPI and review OCR output.
 6. Start the Vapi web voice call for wrongful termination intake.
-7. Review OCR and locally stored voice-intake answers in `/admin`.
+7. Review OCR and locally stored voice-intake answers in `/admin`
 
 <img width="1920" height="960" alt="Screenshot 2026-08-26 at 3 02 39 PM" src="https://github.com/user-attachments/assets/e9acedd8-384e-4474-8ac8-711a8a420d02" />
 
