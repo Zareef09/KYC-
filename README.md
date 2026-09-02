@@ -107,12 +107,12 @@ The admin dashboard is available at `http://localhost:5173/admin`.
 
 ## Intake Flow
 
-1. Capture the front of the license.
-2. Capture the back of the license.
-3. Choose individual or entity.
-4. If entity, upload articles of incorporation.
-5. Submit to FastAPI and review OCR output.
-6. Start the Vapi web voice call for wrongful termination intake.
+1. Capture the front of the license
+2. Capture the back of the license
+3. Choose individual or entity
+4. If entity, upload articles of incorporation
+5. Submit to FastAPI and review OCR output
+6. Start the Vapi web voice call for wrongful termination intake
 7. Review OCR and locally stored voice-intake answers in `/admin`
 
 <img width="1920" height="960" alt="Screenshot 2026-08-26 at 3 02 39 PM" src="https://github.com/user-attachments/assets/e9acedd8-384e-4474-8ac8-711a8a420d02" />
